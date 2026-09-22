@@ -1,7 +1,19 @@
 import { logger } from '../utils/logger.js';
 import { fetchDiff } from '../github/fetchDiff.js';
+import { DiffParser } from '../review/DiffParser.js';
+import { ReviewEngine } from '../review/ReviewEngine.js';
+import { BugRiskStrategy } from '../review/strategies/BugRiskStrategy.js';
+import { StyleStrategy } from '../review/strategies/StyleStrategy.js';
+import { TestCoverageStrategy } from '../review/strategies/TestCoverageStrategy.js';
 
 const HANDLED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
+
+const parser = new DiffParser();
+const engine = new ReviewEngine([
+  new BugRiskStrategy(),
+  new StyleStrategy(),
+  new TestCoverageStrategy(),
+]);
 
 export async function handleWebhook(event, payload, deliveryId) {
   logger.info(`event=${event} action=${payload.action} delivery=${deliveryId}`);
@@ -35,7 +47,7 @@ export async function handleWebhook(event, payload, deliveryId) {
       prNumber: pull_request.number,
     });
 
-    logger.info(`  → fetched diff`, {
+    logger.info('  → fetched diff', {
       fileCount: diff.files.length,
       truncated: diff.truncated,
       totalAdditions: diff.files.reduce((s, f) => s + f.additions, 0),
@@ -43,12 +55,33 @@ export async function handleWebhook(event, payload, deliveryId) {
     });
 
     for (const f of diff.files) {
-      logger.info(`     • ${f.status.padEnd(9)} ${f.path}  +${f.additions} -${f.deletions}${f.patch ? '' : '  (no patch)'}`);
+      logger.info(
+        `     • ${f.status.padEnd(9)} ${f.path}  +${f.additions} -${f.deletions}${f.patch ? '' : '  (no patch)'}`
+      );
     }
 
-    // Phase 3 will plug in here:
-    //   const findings = await reviewEngine.run(...)
+    const rawDiff = diff.rawDiff || diff.files
+      .filter((f) => f.patch)
+      .map((f) => `+++ b/${f.path}\n${f.patch}`)
+      .join('\n');
+
+    const parsed = parser.parse(rawDiff);
+    const diffText = parser.toAddedLinesText(parsed);
+
+    const findings = await engine.run(diffText, {
+      owner,
+      repo,
+      prNumber: pull_request.number,
+    });
+
+    logger.info(`  → review complete: ${findings.length} findings`);
+    for (const f of findings) {
+      logger.info(`     [${f.severity}] ${f.type} ${f.file}:${f.line} — ${f.message}`);
+    }
+
+    // Phase 4 plugs in here:
+    //   await postReview({ owner, repo, prNumber: pull_request.number, findings });
   } catch (err) {
-    logger.error('Failed to fetch diff', err.message);
+    logger.error('Pipeline failed', err.message);
   }
 }
