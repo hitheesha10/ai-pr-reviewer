@@ -4,3 +4,10 @@ node_modules/
 *.log
 .DS_Store
 ngrok.yml
+data/
+*.db
+*.db-shm
+*.db-wal
+dashboard/node_modules/
+dashboard/dist/
+dashboard/node_modules/

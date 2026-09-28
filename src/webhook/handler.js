@@ -7,6 +7,12 @@ import { CommentFormatter } from '../review/CommentFormatter.js';
 import { BugRiskStrategy } from '../review/strategies/BugRiskStrategy.js';
 import { StyleStrategy } from '../review/strategies/StyleStrategy.js';
 import { TestCoverageStrategy } from '../review/strategies/TestCoverageStrategy.js';
+import {
+  createReview,
+  markReviewing,
+  completeReview,
+  failReview,
+} from '../db/reviews.js';
 
 const HANDLED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 
@@ -38,10 +44,19 @@ export async function handleWebhook(event, payload, deliveryId) {
     repo: repository.full_name,
     pr: pull_request.number,
     title: pull_request.title,
-    author: pull_request.user.login,
     action: payload.action,
     headSha: pull_request.head.sha,
   });
+
+  // Persist a review row immediately, so the dashboard can show "reviewing..."
+  const reviewId = createReview({
+    repo: repository.full_name,
+    prNumber: pull_request.number,
+    prTitle: pull_request.title,
+    prAuthor: pull_request.user.login,
+    headSha: pull_request.head.sha,
+  });
+  logger.info(`  → created review row #${reviewId}`);
 
   try {
     const diff = await fetchDiff({ owner, repo, prNumber: pull_request.number });
@@ -50,12 +65,6 @@ export async function handleWebhook(event, payload, deliveryId) {
       fileCount: diff.files.length,
       truncated: diff.truncated,
     });
-
-    for (const f of diff.files) {
-      logger.info(
-        `     • ${f.status.padEnd(9)} ${f.path}  +${f.additions} -${f.deletions}${f.patch ? '' : '  (no patch)'}`
-      );
-    }
 
     const rawDiff = diff.rawDiff || diff.files
       .filter((f) => f.patch)
@@ -66,6 +75,8 @@ export async function handleWebhook(event, payload, deliveryId) {
     const diffText = parser.toAddedLinesText(parsed);
     const validLines = parser.validLineKeys(parsed);
 
+    markReviewing(reviewId);
+
     const findings = await engine.run(diffText, {
       owner,
       repo,
@@ -73,11 +84,8 @@ export async function handleWebhook(event, payload, deliveryId) {
     });
 
     logger.info(`  → review complete: ${findings.length} findings`);
-    for (const f of findings) {
-      logger.info(`     [${f.severity}] ${f.type} ${f.file}:${f.line} — ${f.message}`);
-    }
 
-    await postReview({
+    const githubReview = await postReview({
       owner,
       repo,
       prNumber: pull_request.number,
@@ -85,7 +93,11 @@ export async function handleWebhook(event, payload, deliveryId) {
       validLines,
       formatter,
     });
+
+    completeReview(reviewId, findings, githubReview?.id ?? null);
+    logger.info(`  → saved review #${reviewId} to database`);
   } catch (err) {
     logger.error('Pipeline failed', err.message);
+    failReview(reviewId, err.message);
   }
 }
