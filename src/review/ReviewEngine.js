@@ -14,24 +14,23 @@ export class ReviewEngine {
    * @param {object} context
    * @returns {Promise<Array>}
    */
-  async run(diffText, context) {
-    logger.info(`  → ReviewEngine running ${this.strategies.length} strategies`);
-
-    const results = await Promise.allSettled(
-      this.strategies.map((s) => s.analyze(diffText, context))
-    );
+    async run(diffText, context) {
+    logger.info(`  → ReviewEngine running ${this.strategies.length} strategies (sequential)`);
 
     const findings = [];
 
-    results.forEach((r, i) => {
-      const strategy = this.strategies[i];
-      if (r.status === 'fulfilled') {
-        logger.info(`     • ${strategy.name}: ${r.value.length} findings`);
-        findings.push(...r.value);
-      } else {
-        logger.error(`     • ${strategy.name} failed: ${r.reason.message}`);
+    for (const strategy of this.strategies) {
+      try {
+        const result = await strategy.analyze(diffText, context);
+        logger.info(`     • ${strategy.name}: ${result.length} findings`);
+        findings.push(...result);
+      } catch (err) {
+        logger.error(`     • ${strategy.name} failed: ${err.message.slice(0, 120)}`);
       }
-    });
+
+      // Gap between strategies to reduce pressure on Google's API
+      await new Promise((r) => setTimeout(r, 500));
+    }
 
     return this.sortBySeverity(findings);
   }

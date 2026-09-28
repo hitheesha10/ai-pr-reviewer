@@ -1,7 +1,9 @@
 import { logger } from '../utils/logger.js';
 import { fetchDiff } from '../github/fetchDiff.js';
+import { postReview } from '../github/postReview.js';
 import { DiffParser } from '../review/DiffParser.js';
 import { ReviewEngine } from '../review/ReviewEngine.js';
+import { CommentFormatter } from '../review/CommentFormatter.js';
 import { BugRiskStrategy } from '../review/strategies/BugRiskStrategy.js';
 import { StyleStrategy } from '../review/strategies/StyleStrategy.js';
 import { TestCoverageStrategy } from '../review/strategies/TestCoverageStrategy.js';
@@ -9,6 +11,7 @@ import { TestCoverageStrategy } from '../review/strategies/TestCoverageStrategy.
 const HANDLED_ACTIONS = new Set(['opened', 'synchronize', 'reopened']);
 
 const parser = new DiffParser();
+const formatter = new CommentFormatter();
 const engine = new ReviewEngine([
   new BugRiskStrategy(),
   new StyleStrategy(),
@@ -41,17 +44,11 @@ export async function handleWebhook(event, payload, deliveryId) {
   });
 
   try {
-    const diff = await fetchDiff({
-      owner,
-      repo,
-      prNumber: pull_request.number,
-    });
+    const diff = await fetchDiff({ owner, repo, prNumber: pull_request.number });
 
     logger.info('  → fetched diff', {
       fileCount: diff.files.length,
       truncated: diff.truncated,
-      totalAdditions: diff.files.reduce((s, f) => s + f.additions, 0),
-      totalDeletions: diff.files.reduce((s, f) => s + f.deletions, 0),
     });
 
     for (const f of diff.files) {
@@ -67,6 +64,7 @@ export async function handleWebhook(event, payload, deliveryId) {
 
     const parsed = parser.parse(rawDiff);
     const diffText = parser.toAddedLinesText(parsed);
+    const validLines = parser.validLineKeys(parsed);
 
     const findings = await engine.run(diffText, {
       owner,
@@ -79,8 +77,14 @@ export async function handleWebhook(event, payload, deliveryId) {
       logger.info(`     [${f.severity}] ${f.type} ${f.file}:${f.line} — ${f.message}`);
     }
 
-    // Phase 4 plugs in here:
-    //   await postReview({ owner, repo, prNumber: pull_request.number, findings });
+    await postReview({
+      owner,
+      repo,
+      prNumber: pull_request.number,
+      findings,
+      validLines,
+      formatter,
+    });
   } catch (err) {
     logger.error('Pipeline failed', err.message);
   }

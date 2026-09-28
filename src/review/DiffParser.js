@@ -60,4 +60,20 @@ export class DiffParser {
       .filter(Boolean)
       .join('\n\n');
   }
+
+  /**
+   * Returns a Set of "file:line" strings for added lines that exist in the diff.
+   * Used to filter findings before posting as inline comments.
+   */
+  validLineKeys(parsed) {
+    const set = new Set();
+    for (const f of parsed) {
+      for (const c of f.changes) {
+        if (c.type === 'add') {
+          set.add(`${f.file}:${c.lineNumber}`);
+        }
+      }
+    }
+    return set;
+  }
 }
